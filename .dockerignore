@@ -1,0 +1,7 @@
+.env
+.git
+.claude
+node_modules
+examples
+test
+*.md

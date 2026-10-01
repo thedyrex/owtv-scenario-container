@@ -1,0 +1,36 @@
+<!doctype html>
+<!--
+  Example host page: how another site (e.g. owtv.gg) embeds the tracker.
+  Serve this file from any origin; point the script at wherever the tracker server runs.
+  The aggressive host CSS below is deliberate: it shows the tracker is isolated from it.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Embed example</title>
+  <style>
+    body { margin: 0; font-family: Georgia, serif; background: #f4f4f4; color: #222; }
+    * { letter-spacing: 2px; }
+    table, td, th { border: 3px solid red !important; }
+    h1, h2 { color: purple; font-size: 40px; }
+    .host { max-width: 1200px; margin: 0 auto; padding: 24px; }
+    /* Theme tokens can be overridden from the host page: */
+    owcs-scenarios.rounded { --radius: 8px; }
+  </style>
+  <!-- 1. Load the component (once per page). -->
+  <script type="module" src="http://localhost:3000/owcs-scenarios.js"></script>
+</head>
+<body>
+  <div class="host">
+    <h1>Host page heading</h1>
+
+    <h2>Full tracker (home + stages), shareable via #/… URLs</h2>
+    <!-- 2. Drop the element wherever it should appear. -->
+    <owcs-scenarios routing="hash" class="rounded"></owcs-scenarios>
+
+    <h2>One stage only</h2>
+    <owcs-scenarios stage="japan-stage-3-owcs-2026/regular-season"></owcs-scenarios>
+  </div>
+</body>
+</html>
