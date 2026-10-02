@@ -80,11 +80,13 @@ function parseZones(desc, n) {
   return zones;
 }
 
-function bucketLabel(k, g) {
-  if (g === 1) return k ? "Win" : "Lose";
-  if (k === g) return g === 2 ? "Win both" : "Win all";
-  if (k === 0) return g === 2 ? "Lose both" : "Lose all";
-  return `${k}–${g - k}`;
+// Label a bucket by the team's final record (w/l already banked, plus k wins in g more games).
+// "Win all" / "Lose all" only when that really is a perfect / winless run.
+function bucketLabel(k, g, w, l) {
+  const total = w || l ? ` <span class="tot">(${w + k}–${l + g - k})</span>` : "";
+  if (k === g && l === 0) return (g === 1 ? "Win" : g === 2 ? "Win both" : "Win all") + total;
+  if (k === 0 && w === 0) return (g === 1 ? "Lose" : g === 2 ? "Lose both" : "Lose all") + total;
+  return `${k}–${g - k}${total}`;
 }
 
 // Heatmap cell: OWTV cyan inside the cutoff, neutral grey below it.
@@ -474,10 +476,18 @@ function createTracker(host, root, view) {
       if (deadMax >= 0) lead += deadMax === 0 ? ` Lose ${g === 1 ? "it" : "the lot"} and they are out.` : ` Win ${deadMax} or fewer and they're eliminated whatever else happens.`;
     }
 
+    // Record banked so far, including locked what-ifs (those games are not in the buckets).
+    let bw = row.w, bl = row.l;
+    for (const m of state.data.matches) {
+      const L = state.locked[m.id];
+      if (!L || isPlayed(m) || (m.team1 !== row.team && m.team2 !== row.team)) continue;
+      const mine = m.team1 === row.team ? L[0] : L[1], theirs = m.team1 === row.team ? L[1] : L[0];
+      if (mine > theirs) bw++; else if (theirs > mine) bl++;
+    }
     const rows = g === 0 ? "" : fb.map((b) => {
       const through = b.p >= 1 - 1e-9, out = b.p <= 1e-9;
       return `<div class="row">
-        <span class="lbl">${bucketLabel(b.wins, b.games)}</span>
+        <span class="lbl">${bucketLabel(b.wins, b.games, bw, bl)}</span>
         <span class="bar ${through ? "full" : ""}"><i style="width:${(b.p * 100).toFixed(1)}%"></i></span>
         <span class="v ${through ? "in" : out ? "out" : ""}">${through ? "THROUGH" : out ? "OUT" : pct(b.p)}</span>
         ${b.help ? `<span class="help">needs <b>${esc(team(b.help.winner).name)}</b> to beat ${esc(team(b.help.loser).name)} → ${pct(b.help.p)}</span>` : ""}

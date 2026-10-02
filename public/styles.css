@@ -103,8 +103,9 @@ tr.cutline { border-bottom: 2px solid var(--primary) !important; }
 .card-head .rec { color: var(--dim); font-size: 12px; margin-left: 6px; }
 .card-head .big { font-size: 20px; font-weight: 800; }
 .card .lead { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 8px 0 10px; }
-.row { display: grid; grid-template-columns: 64px 1fr 60px; gap: 10px; align-items: center; padding: 7px 0; border-top: 1px solid var(--line-soft); font-size: 12px; }
-.row .lbl { font-weight: 600; }
+.row { display: grid; grid-template-columns: 92px 1fr 60px; gap: 10px; align-items: center; padding: 7px 0; border-top: 1px solid var(--line-soft); font-size: 12px; }
+.row .lbl { font-weight: 600; white-space: nowrap; }
+.row .lbl .tot { font-weight: 400; color: var(--dim); }
 .bar { height: 6px; background: var(--card); border-radius: 3px; overflow: hidden; }
 .bar > i { display: block; height: 100%; background: var(--primary); }
 .bar.full > i { background: var(--good); }
