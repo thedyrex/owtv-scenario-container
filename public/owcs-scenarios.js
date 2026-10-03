@@ -89,7 +89,6 @@ function bucketLabel(k, g, w, l) {
   return `${k}–${g - k}${total}`;
 }
 
-// Heatmap cell: OWTV cyan inside the cutoff, neutral grey below it.
 function heat(p, inZone) {
   if (p < 0.005) return "background:transparent";
   const a = (0.1 + 0.8 * p).toFixed(2);
