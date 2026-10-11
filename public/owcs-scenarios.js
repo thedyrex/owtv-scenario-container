@@ -37,12 +37,17 @@ async function createWorker() {
 
 // ---------- Pure helpers ----------
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+// True while showing a sampled (not fully counted) result: mid-range values are only good to
+// about +/-0.15 points, so they are rounded to whole numbers rather than implying false precision.
+let approx = false;
 const pct = (p) => {
   if (p >= 1 - 1e-9) return "100%";
   if (p <= 1e-9) return "0%";
   const v = p * 100;
+  if (approx && v >= 10 && v <= 90) return Math.round(v) + "%";
   if (v > 99.9) return ">99.9%";
-  if (v < 0.1) return "<0.1%";
+  if (v < 0.01) return "<0.01%";
+  if (v < 0.1) return v.toFixed(2) + "%";
   return v.toFixed(1) + "%";
 };
 const color = (t) => { const c = String(t.color || "").replace(/^#/, ""); return /^[0-9a-f]{3,8}$/i.test(c) ? "#" + c : "#555"; };
@@ -87,6 +92,16 @@ function bucketLabel(k, g, w, l) {
   if (k === g && l === 0) return (g === 1 ? "Win" : g === 2 ? "Win both" : "Win all") + total;
   if (k === 0 && w === 0) return (g === 1 ? "Lose" : g === 2 ? "Lose both" : "Lose all") + total;
   return `${k}–${g - k}${total}`;
+}
+
+// Heatmap cell text: whole numbers from 1%, then 1-2 decimals so a real chance never renders blank.
+function heatText(p) {
+  const v = p * 100;
+  if (v <= 1e-7) return "";
+  if (v >= 0.995) return String(Math.round(v));
+  if (v >= 0.1) return v.toFixed(1);
+  if (v >= 0.01) return v.toFixed(2);
+  return "<.01";
 }
 
 function heat(p, inZone) {
@@ -346,6 +361,7 @@ function createTracker(host, root, view) {
     if (!d || destroyed) return;
     const rows = currentTable();
     const res = state.result;
+    approx = !!res && res.exact === false;
     const byTeam = res ? Object.fromEntries(res.results.map((r) => [r.team, r])) : {};
     const n = teamIds().length;
     const played = d.matches.filter(isPlayed).length;
@@ -394,6 +410,7 @@ function createTracker(host, root, view) {
         ${!n ? (tbd ? "" : `<div class="note">TBD</div>`) : tab === "overview" ? `
           <h2>Standings <small>${res && res.freeMatches ? "Chance to finish in each place across every remaining scoreline" : ""}</small></h2>
           ${standingsTable(order, byTeam, n)}
+          ${approx ? `<div class="note">Too many outcomes remain to count them all, so these are estimated from ${res.runs.toLocaleString()} sampled outcomes. Mid-range percentages are rounded to whole numbers to match that accuracy. They become exact as the stage goes on.</div>` : ""}
           ${res && res.freeMatches ? `<h2>What they need <small>Every remaining result, sorted by what the team itself does. Top ${state.cutoff}${headline() ? " → " + esc(headline()) : ""}.</small></h2>
             <div class="cards">${order.map((r) => needCard(r, byTeam[r.team])).join("")}</div>` : ""}
         ` : tab === "fixtures" ? matchesSection() : `
@@ -440,7 +457,7 @@ function createTracker(host, root, view) {
         <td class="pct ${cls}">${q == null ? (state.running ? "…" : "–") : pct(q)}</td>
         ${zoneCols.map((z) => `<td>${zone(z)}</td>`).join("")}
         ${showHeat ? `<td class="muted">${s.best === s.worst ? s.best : `${s.best}–${s.worst}`}</td>` +
-          s.pos.map((p, j) => `<td class="heat" style="${heat(p, j < state.cutoff)}">${p < 0.005 ? "" : Math.round(p * 100)}</td>`).join("") : ""}
+          s.pos.map((p, j) => `<td class="heat" style="${heat(p, j < state.cutoff)}">${heatText(p)}</td>`).join("") : ""}
       </tr>`;
     }).join("");
     return `<div class="table-wrap"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
