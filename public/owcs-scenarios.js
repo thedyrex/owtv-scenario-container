@@ -331,9 +331,12 @@ function createTracker(host, root, view) {
     for (const m of state.data.matches) {
       const a = rows[m.team1], b = rows[m.team2];
       if (!a || !b) continue;
-      if (!isPlayed(m)) { a.left.push(m.team2); b.left.push(m.team1); continue; }
-      a.mw += m.s1; a.ml += m.s2; b.mw += m.s2; b.ml += m.s1;
-      if (m.s1 > m.s2) { a.w++; b.l++; } else if (m.s2 > m.s1) { b.w++; a.l++; } else { a.d++; b.d++; }
+      // A locked what-if counts as played, so the table shows the record that scoreline would give.
+      const L = !isPlayed(m) && state.locked[m.id];
+      if (!isPlayed(m) && !L) { a.left.push(m.team2); b.left.push(m.team1); continue; }
+      const s1 = L ? L[0] : m.s1, s2 = L ? L[1] : m.s2;
+      a.mw += s1; a.ml += s2; b.mw += s2; b.ml += s1;
+      if (s1 > s2) { a.w++; b.l++; } else if (s2 > s1) { b.w++; a.l++; } else { a.d++; b.d++; }
     }
     return rows;
   }
@@ -341,8 +344,10 @@ function createTracker(host, root, view) {
   function stageStatus(d) {
     const now = new Date().toISOString();
     const start = d.phase.startDate || d.tournament.startDate, end = d.phase.endDate || d.tournament.endDate;
-    const allDone = d.matches.length && d.matches.every(isPlayed);
-    if (allDone || (end && end < now)) return { label: "Completed", cls: "done" };
+    // With matches on the schedule, only played results count. The listed end date can be wrong
+    // (EMEA's ends before it starts) or pass with matches still to play.
+    const done = d.matches.length ? d.matches.every(isPlayed) : end && end < now;
+    if (done) return { label: "Completed", cls: "done" };
     if (start && start <= now) return { label: "Ongoing", cls: "live" };
     if (start) return { label: "Upcoming", cls: "soon" };
     return null;
@@ -410,7 +415,6 @@ function createTracker(host, root, view) {
         ${!n ? (tbd ? "" : `<div class="note">TBD</div>`) : tab === "overview" ? `
           <h2>Standings <small>${res && res.freeMatches ? "Chance to finish in each place across every remaining scoreline" : ""}</small></h2>
           ${standingsTable(order, byTeam, n)}
-          ${approx ? `<div class="note">Too many outcomes remain to count them all, so these are estimated from ${res.runs.toLocaleString()} sampled outcomes. Mid-range percentages are rounded to whole numbers to match that accuracy. They become exact as the stage goes on.</div>` : ""}
           ${res && res.freeMatches ? `<h2>What they need <small>Every remaining result, sorted by what the team itself does. Top ${state.cutoff}${headline() ? " → " + esc(headline()) : ""}.</small></h2>
             <div class="cards">${order.map((r) => needCard(r, byTeam[r.team])).join("")}</div>` : ""}
         ` : tab === "fixtures" ? matchesSection() : `
@@ -492,14 +496,8 @@ function createTracker(host, root, view) {
       if (deadMax >= 0) lead += deadMax === 0 ? ` Lose ${g === 1 ? "it" : "the lot"} and they are out.` : ` Win ${deadMax} or fewer and they're eliminated whatever else happens.`;
     }
 
-    // Record banked so far, including locked what-ifs (those games are not in the buckets).
-    let bw = row.w, bl = row.l;
-    for (const m of state.data.matches) {
-      const L = state.locked[m.id];
-      if (!L || isPlayed(m) || (m.team1 !== row.team && m.team2 !== row.team)) continue;
-      const mine = m.team1 === row.team ? L[0] : L[1], theirs = m.team1 === row.team ? L[1] : L[0];
-      if (mine > theirs) bw++; else if (theirs > mine) bl++;
-    }
+    // Record banked so far; locked what-ifs are already in the table row (and not in the buckets).
+    const bw = row.w, bl = row.l;
     const rows = g === 0 ? "" : fb.map((b) => {
       const through = b.p >= 1 - 1e-9, out = b.p <= 1e-9;
       return `<div class="row">

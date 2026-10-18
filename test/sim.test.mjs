@@ -91,3 +91,24 @@ test("sampling is deterministic for the same inputs", () => {
   const c = simulate({ ...many, locked: { 100: [3, 0] } });
   assert.notEqual(c.seed, a.seed, "a what-if changes the sample");
 });
+
+test("tiebreakers: head-to-head among three places only the leader, then restarts for the rest", () => {
+  // TM beat Peps 3-0, Peps beat VP 3-2, VP beat TM 3-2: all 1-1 with a circular head-to-head.
+  // Head-to-head map diff is TM +2, VP 0, Peps -2, so TM is first. VP and Peps then go back to
+  // head-to-head wins between themselves, and Peps beat VP, so Peps is second.
+  const res = simulate({
+    teams: ["TM", "VP", "PEPS"],
+    played: [
+      { a: "TM", b: "PEPS", sa: 3, sb: 0 },
+      { a: "PEPS", b: "VP", sa: 3, sb: 2 },
+      { a: "VP", b: "TM", sa: 3, sb: 2 },
+    ],
+    remaining: [],
+    cutoff: 2,
+    tiebreakers: ["wins", "h2hWins", "h2hMapDiff", "mapDiff", "mapPct", "sov"],
+  });
+  const t = byTeam(res);
+  assert.equal(t.TM.pos[0], 1);
+  assert.equal(t.PEPS.pos[1], 1);
+  assert.equal(t.VP.pos[2], 1);
+});

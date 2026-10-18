@@ -127,6 +127,13 @@ function simulate(input, onProgress) {
     if (crit >= tbs.length) return emit(set);
     const v = set.map((i) => [i, val(set, crit, i)]).sort((x, y) => y[1] - x[1]);
     if (v[0][1] === v[v.length - 1][1]) return rank(set, crit + 1);
+    if (H2H.has(tbs[crit]) && set.length > 2) {
+      // Head-to-head among 3+ teams only places the leader. The rest go back to the first
+      // head-to-head criterion, recomputed among just themselves.
+      const top = v.filter((x) => x[1] === v[0][1]).map((x) => x[0]);
+      rank(top, firstH2H);
+      return rank(set.filter((i) => !top.includes(i)), firstH2H);
+    }
     let g = [v[0][0]];
     for (let x = 1; x <= v.length; x++) {
       if (x < v.length && v[x][1] === v[x - 1][1]) { g.push(v[x][0]); continue; }
