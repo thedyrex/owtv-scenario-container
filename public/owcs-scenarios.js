@@ -87,6 +87,16 @@ function parseZones(desc, n) {
 
 // Label a bucket by the team's final record (w/l already banked, plus k wins in g more games).
 // "Win all" / "Lose all" only when that really is a perfect / winless run.
+// Outside results that move a bucket's odds: the best few, and any that put the team out on their own.
+function helpLines(b, team) {
+  const line = (r, cls, text) => `<span class="${cls}">${text} <b>${esc(team(r.winner).name)}</b> ${cls === "up" ? "beating" : "beat"} ${esc(team(r.loser).name)}${cls === "up" ? ` → ${pct(r.p)}` : ""}</span>`;
+  const rows = [...(b.helps || []).map((r) => line(r, "up", "helped by")), ...(b.outIf || []).map((r) => line(r, "down", "out if"))];
+  const sc = b.scenarios;
+  const paths = sc && sc.list.length ? `<details class="paths"><summary>${sc.alive} of ${sc.total} outside combinations keep them alive</summary>${sc.list.map((x) =>
+    `<div class="path"><span class="pp">${x.p >= 1 - 1e-9 ? "in" : pct(x.p)}</span><span>${x.picks.map((r) => `<b>${esc(team(r.winner).name)}</b> beat ${esc(team(r.loser).name)}`).join(" · ")}</span></div>`).join("")}${sc.alive > sc.list.length ? `<div class="path more">+ ${sc.alive - sc.list.length} more</div>` : ""}</details>` : "";
+  return rows.length || paths ? `<span class="help">${rows.join("")}${paths}</span>` : "";
+}
+
 function bucketLabel(k, g, w, l) {
   const total = w || l ? ` <span class="tot">(${w + k}–${l + g - k})</span>` : "";
   if (k === g && l === 0) return (g === 1 ? "Win" : g === 2 ? "Win both" : "Win all") + total;
@@ -131,7 +141,7 @@ function createTracker(host, root, view) {
   const state = {
     view: "home", circuits: null, data: null, phaseId: null, stageKey: null,
     locked: {}, cutoff: 4, cutoffOverridden: false, zones: [], format: null,
-    result: null, running: 0, tab: "overview",
+    result: null, running: 0, tab: "overview", treeFocus: null, treeOpen: new Set(), treeZoom: null,
     checkedAt: null, news: [], fresh: new Set(),
   };
   let seq = 0, polling = false, destroyed = false;
@@ -309,6 +319,16 @@ function createTracker(host, root, view) {
     return [...new Set(d.matches.flatMap((m) => [m.team1, m.team2]).filter(Boolean))];
   }
 
+  // Matches the all-results tree branches on: the user's pick, else the soonest few when too many remain.
+  const openMatches = () => (state.data?.matches || []).filter((m) => !isPlayed(m) && m.team1 && m.team2 && !state.locked[m.id])
+    .sort((x, y) => String(x.start || "").localeCompare(String(y.start || "")) || x.id - y.id);
+  function treeFocusIds() {
+    const open = openMatches(), ids = new Set(open.map((m) => m.id));
+    const picked = (state.treeFocus || []).filter((id) => ids.has(id));
+    if (state.treeFocus) return picked.slice(0, 6);
+    return open.length > 6 ? open.slice(0, 4).map((m) => m.id) : null;
+  }
+
   function run() {
     const d = state.data;
     const teams = teamIds();
@@ -321,7 +341,7 @@ function createTracker(host, root, view) {
     if (!teams.length || d.matches.some((m) => !m.team1 || !m.team2)) return;
     const id = ++seq;
     state.running = id;
-    const input = { teams, played, remaining, locked: state.locked, cutoff: state.cutoff, tiebreakers: state.format.tiebreakers };
+    const input = { teams, played, remaining, locked: state.locked, cutoff: state.cutoff, tiebreakers: state.format.tiebreakers, focus: treeFocusIds() };
     workerReady.then((w) => w.postMessage({ id, input }));
   }
 
@@ -378,7 +398,7 @@ function createTracker(host, root, view) {
     else order.sort((a, b) => b.w - a.w || (b.mw - b.ml) - (a.mw - a.ml));
 
     const tab = state.tab;
-    const tabs = [["overview", "Overview"], ["fixtures", "Fixtures"], ["format", "Format"]];
+    const tabs = [["overview", "Overview"], ["flow", "Flowchart"], ["fixtures", "Fixtures"], ["format", "Format"]];
     const status = stageStatus(d);
 
     view.innerHTML = `
@@ -417,7 +437,7 @@ function createTracker(host, root, view) {
           ${standingsTable(order, byTeam, n)}
           ${res && res.freeMatches ? `<h2>What they need <small>Every remaining result, sorted by what the team itself does. Top ${state.cutoff}${headline() ? " → " + esc(headline()) : ""}.</small></h2>
             <div class="cards">${order.map((r) => needCard(r, byTeam[r.team])).join("")}</div>` : ""}
-        ` : tab === "fixtures" ? matchesSection() : `
+        ` : tab === "flow" ? flowSection() : tab === "fixtures" ? matchesSection() : `
           ${formatSection()}
           <h2>How it's counted</h2>
           <div class="note">
@@ -504,7 +524,7 @@ function createTracker(host, root, view) {
         <span class="lbl">${bucketLabel(b.wins, b.games, bw, bl)}</span>
         <span class="bar ${through ? "full" : ""}"><i style="width:${(b.p * 100).toFixed(1)}%"></i></span>
         <span class="v ${through ? "in" : out ? "out" : ""}">${through ? "THROUGH" : out ? "OUT" : pct(b.p)}</span>
-        ${b.help ? `<span class="help">needs <b>${esc(team(b.help.winner).name)}</b> to beat ${esc(team(b.help.loser).name)} → ${pct(b.help.p)}</span>` : ""}
+        ${helpLines(b, team)}
       </div>`;
     }).join("");
 
@@ -515,6 +535,140 @@ function createTracker(host, root, view) {
       ${rows}
       ${games ? `<div class="left">Left to play: ${esc(leftText)}</div>` : ""}
     </div>`;
+  }
+
+  // Decision tree of every remaining match in date order: each branch is a winner, each leaf who gets through.
+  function flowSection() {
+    const chosen = new Set(treeFocusIds() || openMatches().map((m) => m.id));
+    const picker = `<div class="note"><b>Matchups to branch on</b> (up to 6)</div><div class="chips">${openMatches().map((m) =>
+      `<button data-focus="${m.id}" class="chip-btn ${chosen.has(m.id) ? "on" : ""}" title="${esc(m.start ? longDate(m.start) : "")}">${esc(team(m.team1).initials || team(m.team1).name)} vs ${esc(team(m.team2).initials || team(m.team2).name)}${m.start ? ` · ${esc(shortDate(m.start))}` : ""}</button>`).join("")}</div>`;
+    const tr = state.result?.tree;
+    if (!tr) return picker + (state.result ? `<div class="note">Pick at least one matchup to see how its result changes who gets through.</div>` : `<div class="note">Working it out…</div>`);
+    const byId = Object.fromEntries(state.data.matches.map((m) => [m.id, m]));
+    const ord = tr.matches.map((m, i) => ({ ...m, j: i, bit: 1 << i, start: byId[m.id]?.start || "" }))
+      .sort((x, y) => String(x.start).localeCompare(String(y.start)) || x.id - y.id);
+    const F = ord.length, nm = (id) => team(id).initials || team(id).name;
+    const exact = state.result.exact !== false;
+    const prec = exact ? 1000 : 50;                                // sampled odds are noisy, so compare coarsely
+    const build = (d, mask) => {
+      if (d === F) { const lf = tr.leaves[mask]; return { lf, mask, sig: lf ? lf.q.map((v) => Math.round(v * prec)).join(",") : "x" }; }
+      const m = ord[d], lo = build(d + 1, mask), hi = build(d + 1, mask | m.bit);   // lo: first-listed team wins
+      if (lo.sig === hi.sig) return { m, d, skip: lo, sig: lo.sig };               // result doesn't change anything
+      return { m, d, lo, hi, sig: `(${m.id}:${lo.sig}|${hi.sig})` };
+    };
+    const root = build(0, 0);
+    // What each tied team needs: the one match whose map score best splits its in/out cases.
+    const needs = (lf, mask, t) => {
+      if (!lf?.by) return { text: "", full: "", more: false };
+      let best = null;
+      for (const m of ord) {
+        const st = lf.by[t][m.j].map((v) => v == null ? null : v >= 1 - 1e-9 ? "in" : v <= 1e-9 ? "out" : "maybe");
+        const kinds = new Set(st.filter(Boolean));
+        if (kinds.size < 2) continue;
+        const def = st.filter((x) => x === "in" || x === "out").length;
+        if (!best || def > best.def) best = { m, st, def };
+      }
+      if (!best) return { text: "depends on several map scores", full: "", more: true };
+      const b = (mask >> best.m.j) & 1, W = nm(b ? best.m.b : best.m.a), L = nm(b ? best.m.a : best.m.b);
+      const valid = best.st.map((x, lm) => x ? lm : null).filter((x) => x != null);
+      const sc = (kind) => { const v = best.st.map((x, lm) => x === kind ? lm : null).filter((x) => x != null); return v.length ? scoreText(best.m.ft, v, valid) : ""; };
+      const groups = [["in", "in if"], ["out", "out if"], ["maybe", "unclear if"]].filter(([k]) => sc(k))
+        .map(([k, w]) => `${w} ${W} beat ${L} ${sc(k)}`);
+      // Closed leaf: just the first clear condition. The rest is in the dropdown.
+      return { text: groups[0], full: groups.join(" · "), more: groups.length > 1 };
+    };
+    // "3–0 or 3–1", or "any score" when the list covers every score that can happen.
+    const scoreText = (ft, vals, valid) => vals.length === valid.length ? "by any score" : vals.map((v) => `${ft}–${v}`).join(" or ");
+    const byJ = Object.fromEntries(ord.map((m) => [m.j, m]));
+    // The same, from the best pair of matches, for teams one score can't settle.
+    const pairLines = (lf, mask, t) => {
+      const P = lf?.pairs;
+      if (!P) return [];
+      let best = null;
+      P.list.forEach(([j1, j2], p) => {
+        const cells = P.by[t][p].map((v) => v == null ? null : v >= 1 - 1e-9 ? "in" : v <= 1e-9 ? "out" : "maybe");
+        if (new Set(cells.filter(Boolean)).size < 2) return;
+        const def = cells.filter((x) => x === "in" || x === "out").length;
+        if (!best || def > best.def) best = { j1, j2, cells, def };
+      });
+      if (!best) return ["still depends on three or more map scores"];
+      const m1 = byJ[best.j1], m2 = byJ[best.j2], mf = P.mf;
+      const who = (m) => { const b = (mask >> m.j) & 1; return `${nm(b ? m.b : m.a)} beat ${nm(b ? m.a : m.b)}`; };
+      const lines = [];
+      const validA = [], validB = [];
+      for (let x = 0; x < mf; x++) for (let y = 0; y < mf; y++) if (best.cells[x * mf + y]) { if (!validA.includes(x)) validA.push(x); if (!validB.includes(y)) validB.push(y); }
+      for (const kind of ["in", "out"]) {
+        // Scores of the first match that give the same set of second-match scores are merged.
+        const groups = new Map();
+        for (const x of validA) {
+          const ys = validB.filter((y) => best.cells[x * mf + y] === kind);
+          if (!ys.length) continue;
+          const key = ys.join(",");
+          if (!groups.has(key)) groups.set(key, { xs: [], ys });
+          groups.get(key).xs.push(x);
+        }
+        for (const g of groups.values()) lines.push(`${kind}: ${who(m1)} ${scoreText(m1.ft, g.xs, validA)} + ${who(m2)} ${scoreText(m2.ft, g.ys, validB)}`);
+      }
+      return lines.length ? lines : ["still depends on three or more map scores"];
+    };
+    const names = (arr) => arr.map((t) => esc(nm(tr.teams[t]))).join(", ");
+    const hiQ = exact ? 1 - 1e-9 : 0.995, loQ = exact ? 1e-9 : 0.005;
+    const info = (nd) => {
+      if (nd.lf !== undefined) {
+        const q = nd.lf ? nd.lf.q : [], inn = [], mid = [], no = [];
+        q.forEach((v, t) => (v >= hiQ ? inn : v <= loQ ? no : mid).push(t));
+        const pl = nd.lf ? nd.lf.place : [];
+        const byPlace = (x, y) => pl[x] - pl[y] || q[y] - q[x];     // finish order, best first
+        mid.sort(byPlace); inn.sort(byPlace); no.sort(byPlace);
+        const open = state.treeOpen.has(String(nd.mask));
+        const need = mid.map((t) => exact ? needs(nd.lf, nd.mask, t) : { text: Math.round(q[t] * 100) + "%", full: "", more: false });
+        const more = exact && need.some((x) => x.more) && !!nd.lf?.pairs;
+        const rows = [{ c: "tr-in", t: "In: " + names(inn) }];
+        mid.forEach((t, i) => rows.push({ c: "tr-mid", t: esc(nm(tr.teams[t])) + ": " + esc(need[i].text) }));
+        if (more) rows.push({ c: "tr-tog", t: open ? "▾ hide detail" : "▸ more detail", leaf: nd.mask });
+        if (more && open) mid.forEach((t, i) => { if (need[i].more) { rows.push({ c: "tr-sub1", t: esc(nm(tr.teams[t])) + ":" }); if (need[i].full) rows.push({ c: "tr-sub", t: esc(need[i].full) }); pairLines(nd.lf, nd.mask, t).forEach((l) => rows.push({ c: "tr-sub", t: esc(l) })); } });
+        rows.push({ c: "tr-out", t: "Out: " + names(no) });
+        nd.rows = rows; nd.h = rows.length * 16 + 14;
+        return;
+      }
+      if (nd.skip) info(nd.skip); else { info(nd.lo); info(nd.hi); }
+    };
+    info(root);
+    const COLW = 205, NW = 118, NH = 32, LEAFW = 470, LX = F * COLW + 24;
+    let cursor = 10;
+    const lay = (nd) => {
+      if (nd.lf !== undefined) { nd.y = cursor + nd.h / 2 + 4; cursor += nd.h + 8; return; }
+      if (nd.skip) { lay(nd.skip); nd.y = nd.skip.y; return; }
+      lay(nd.lo); lay(nd.hi); nd.y = (nd.lo.y + nd.hi.y) / 2;
+    };
+    lay(root);
+    const xOf = (nd) => nd.lf !== undefined ? LX : nd.d * COLW;
+    const edge = (a, b, label) => {
+      const x1 = xOf(a) + NW, y1 = a.y, x2 = xOf(b), y2 = b.y, m = (x1 + x2) / 2;
+      return `<path class="tr-edge" d="M${x1},${y1} C${m},${y1} ${m},${y2} ${x2},${y2}"/>${label ? `<text class="tr-win" x="${m}" y="${(y1 + y2) / 2 - 4}" text-anchor="middle">${esc(label)}</text>` : ""}`;
+    };
+    let out = "";
+    const draw = (nd) => {
+      if (nd.lf !== undefined) {
+        const h = nd.h, top = nd.y - h / 2 - 4 + 4;
+        out += `<g class="tr-leaf"><rect x="${LX}" y="${top - 4 + 4}" width="${LEAFW}" height="${h}" rx="4"/>${nd.rows.map((r, i) =>
+          `<text x="${LX + (r.c === "tr-sub" ? 22 : 10)}" y="${top + 16 + i * 16}" class="${r.c}"${r.leaf != null ? ` data-leaf="${r.leaf}"` : ""}>${r.t}</text>`).join("")}</g>`;
+        return;
+      }
+      const x = nd.d * COLW, m = nd.m;
+      if (nd.skip) { out += edge(nd, nd.skip, ""); draw(nd.skip); }
+      else {
+        out += edge(nd, nd.lo, nm(m.a) + " wins") + edge(nd, nd.hi, nm(m.b) + " wins");
+        draw(nd.lo); draw(nd.hi);
+      }
+      out += `<g class="tr-node"><rect x="${x}" y="${nd.y - NH / 2}" width="${NW}" height="${NH}" rx="14"/>
+        <text x="${x + NW / 2}" y="${nd.y + (nd.skip ? -1 : 4)}" text-anchor="middle" class="tr-t">${esc(nm(m.a))} vs ${esc(nm(m.b))}</text>${nd.skip ? `<text x="${x + NW / 2}" y="${nd.y + 11}" text-anchor="middle" class="tr-s">${exact ? "doesn't matter" : "barely matters"}</text>` : ""}</g>`;
+    };
+    draw(root);
+    const H = cursor + 10, W = LX + LEAFW + 10;
+    return `<h2>All results <small>Pick matchups, then follow a winner to see who finishes in the top ${state.cutoff}${F < (state.result.freeMatches || 0) ? ". Matches you didn't pick are averaged over, so some teams show a chance instead of in/out" : ""}.</small></h2>${picker}
+      <div class="zoom"><button data-zoom="out" aria-label="Zoom out">−</button><span>${state.treeZoom ? Math.round(state.treeZoom * 100) + "%" : "Fit"}</span><button data-zoom="in" aria-label="Zoom in">+</button><button data-zoom="fit">Fit</button></div>
+      <div class="flow-wrap${state.treeZoom ? " zoomed" : ""}"><svg class="flow tree" viewBox="0 0 ${W} ${H}" style="${state.treeZoom ? `width:${Math.round(W * state.treeZoom)}px;min-width:0;max-width:none` : `min-width:${Math.min(W, 900)}px`}" role="img" aria-label="All remaining results">${out}</svg></div>`;
   }
 
   function matchesSection() {
@@ -567,6 +721,23 @@ function createTracker(host, root, view) {
       if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) { if (opts.routing !== "none") return; }
       e.preventDefault();
       return navigate(nav.dataset.nav);
+    }
+    const zb = e.target.closest("button[data-zoom]");
+    if (zb) {
+      const z = state.treeZoom, k = zb.dataset.zoom;
+      state.treeZoom = k === "fit" ? null : Math.min(3, Math.max(0.3, (z ?? 1) * (k === "in" ? 1.25 : 0.8)));
+      const keep = root.querySelector(".flow-wrap"), sl = keep?.scrollLeft || 0, st = keep?.scrollTop || 0;
+      render();
+      const w = root.querySelector(".flow-wrap"); if (w) { w.scrollLeft = sl; w.scrollTop = st; }
+      return;
+    }
+    const tl = e.target.closest("[data-leaf]");
+    if (tl) { const k = tl.dataset.leaf; if (state.treeOpen.has(k)) state.treeOpen.delete(k); else state.treeOpen.add(k); return render(); }
+    const fp = e.target.closest("button[data-focus]");
+    if (fp) {
+      const id = +fp.dataset.focus, cur = new Set(treeFocusIds() || openMatches().map((m) => m.id));
+      if (cur.has(id)) cur.delete(id); else if (cur.size < 6) cur.add(id); else return;
+      state.treeFocus = [...cur]; state.result = null; return run();
     }
     const tab = e.target.closest("button[data-tab]");
     if (tab) { state.tab = tab.dataset.tab; return render(); }

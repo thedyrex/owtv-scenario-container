@@ -112,3 +112,24 @@ test("tiebreakers: head-to-head among three places only the leader, then restart
   assert.equal(t.PEPS.pos[1], 1);
   assert.equal(t.VP.pos[2], 1);
 });
+
+test("tiebreakers: a later criterion that splits three teams also only places the leader", () => {
+  // GK, 1234 and TR each beat one of the others 3-0 (a circle) and beat X once. Wins, head-to-head
+  // wins and head-to-head map diff are all level; overall map diff is GK +3, 1234 +2, TR +1.
+  // GK is first on map diff. TR and 1234 then go back to head-to-head, where TR beat 1234, so TR is second.
+  const res = simulate({
+    teams: ["GK", "TR", "1234", "X"],
+    played: [
+      { a: "GK", b: "TR", sa: 3, sb: 0 }, { a: "1234", b: "GK", sa: 3, sb: 0 }, { a: "TR", b: "1234", sa: 3, sb: 0 },
+      { a: "GK", b: "X", sa: 3, sb: 0 }, { a: "1234", b: "X", sa: 3, sb: 1 }, { a: "TR", b: "X", sa: 3, sb: 2 },
+    ],
+    remaining: [],
+    cutoff: 2,
+    tiebreakers: ["wins", "h2hWins", "h2hMapDiff", "mapDiff", "mapPct", "sov"],
+  });
+  const t = byTeam(res);
+  assert.equal(t.GK.pos[0], 1);
+  assert.equal(t.TR.pos[1], 1);
+  assert.equal(t["1234"].pos[2], 1);
+  assert.equal(t.X.pos[3], 1);
+});

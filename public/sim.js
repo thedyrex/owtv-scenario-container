@@ -79,6 +79,38 @@ function simulate(input, onProgress) {
   const cCnt = teams.map((_, t) => new Float64Array((myGames[t] + 1) * F * 2));
   const cQ = teams.map((_, t) => new Float64Array((myGames[t] + 1) * F * 2));
 
+  // Scenario paths: per team, per own win count, per combination of OUTSIDE match winners. Only
+  // tracked when the count is exact and small enough for the combinations to stay readable.
+  const trackScen = exact && F <= 12;
+  const NM = 1 << F;
+  const sCnt = trackScen ? teams.map((_, t) => new Float64Array((myGames[t] + 1) * NM)) : null;
+  const sQ = trackScen ? teams.map((_, t) => new Float64Array((myGames[t] + 1) * NM)) : null;
+  // Whole-table outcome per combination of winners, for the all-results flowchart. Kept small.
+  // input.focus = match ids to branch on (max 6); the other matches are averaged over. Without it,
+  // an exact count with 6 or fewer matches left branches on all of them.
+  let focusIdx = null;
+  if (input.focus) focusIdx = input.focus.map((id) => free.findIndex((m) => m.id === id)).filter((i) => i >= 0).slice(0, 6);
+  else if (trackScen && F > 0 && F <= 6) focusIdx = free.map((_, i) => i);
+  const trackTree = !!focusIdx && focusIdx.length > 0;
+  const NF = trackTree ? 1 << focusIdx.length : 0;
+  const gCnt = trackTree ? new Float64Array(NF) : null;
+  const gQ = trackTree ? new Float64Array(NF * n) : null;
+  const gP = trackTree ? new Float64Array(NF * n) : null;       // summed finishing place (0-based) per leaf
+  const runPlace = new Float64Array(n);
+  // Per leaf: how each focus match's map score (loser's maps) moves each team's odds. Exact counts only.
+  const KF = trackTree ? focusIdx.length : 0;
+  const MF = trackTree ? Math.max(...focusIdx.map((i) => free[i].f)) : 0;
+  const trackMar = trackTree && exact;
+  const mCnt = trackMar ? new Float64Array(NF * KF * MF) : null;
+  const mQ = trackMar ? new Float64Array(NF * n * KF * MF) : null;
+  // Same, for pairs of focus matches, so a team that one score can't settle can be explained by two.
+  const pairList = [];
+  for (let a = 0; a < KF; a++) for (let b = a + 1; b < KF; b++) pairList.push([a, b]);
+  const PK = pairList.length, MM = MF * MF;
+  const trackPair = trackMar && PK > 0 && runs <= 600000;
+  const pCnt = trackPair ? new Float64Array(NF * PK * MM) : null;
+  const pQ = trackPair ? new Float64Array(NF * n * PK * MM) : null;
+  const lms = new Int32Array(KF || 1);
   const cw = new Float64Array(n), cmw = new Float64Array(n), cml = new Float64Array(n);
   const cH = new Float64Array(n * n), cHM = new Float64Array(n * n);
   const out = new Int32Array(F);
@@ -116,7 +148,7 @@ function simulate(input, onProgress) {
     const inCut = Math.max(0, Math.min(k, cutoff - s)) / k;
     for (const t of block) {
       for (let p = s; p < s + k; p++) pos[t * n + p] += 1 / k;
-      q[t] = inCut;
+      q[t] = inCut; runPlace[t] = s + (k - 1) / 2;
       if (s < best[t]) best[t] = s;
       if (s + k - 1 > worst[t]) worst[t] = s + k - 1;
     }
@@ -127,9 +159,9 @@ function simulate(input, onProgress) {
     if (crit >= tbs.length) return emit(set);
     const v = set.map((i) => [i, val(set, crit, i)]).sort((x, y) => y[1] - x[1]);
     if (v[0][1] === v[v.length - 1][1]) return rank(set, crit + 1);
-    if (H2H.has(tbs[crit]) && set.length > 2) {
-      // Head-to-head among 3+ teams only places the leader. The rest go back to the first
-      // head-to-head criterion, recomputed among just themselves.
+    if (set.length > 2 && firstH2H >= 0 && firstH2H <= crit) {
+      // Once head-to-head has been reached, any criterion that splits 3+ teams only places the
+      // leader. The rest go back to the first head-to-head criterion, recomputed among just themselves.
       const top = v.filter((x) => x[1] === v[0][1]).map((x) => x[0]);
       rank(top, firstH2H);
       return rank(set.filter((i) => !top.includes(i)), firstH2H);
@@ -153,8 +185,32 @@ function simulate(input, onProgress) {
     }
     place = 0;
     rank(all, 0);
+    let allMask = 0;
+    if (trackScen) for (let i = 0; i < F; i++) if (winnerSide[i]) allMask |= 1 << i;
+    if (trackTree) {
+      let gm = 0;
+      for (let j = 0; j < focusIdx.length; j++) if (winnerSide[focusIdx[j]]) gm |= 1 << j;
+      gCnt[gm]++; for (let t = 0; t < n; t++) { gQ[gm * n + t] += q[t]; gP[gm * n + t] += runPlace[t]; }
+      if (trackMar) for (let j = 0; j < KF; j++) {
+        const o = out[focusIdx[j]], f = free[focusIdx[j]].f, lm = o < f ? o : o - f;
+        lms[j] = lm;
+        mCnt[(gm * KF + j) * MF + lm]++;
+        for (let t = 0; t < n; t++) mQ[((gm * n + t) * KF + j) * MF + lm] += q[t];
+      }
+      if (trackPair) for (let p = 0; p < PK; p++) {
+        const cell = lms[pairList[p][0]] * MF + lms[pairList[p][1]];
+        pCnt[(gm * PK + p) * MM + cell]++;
+        for (let t = 0; t < n; t++) pQ[((gm * n + t) * PK + p) * MM + cell] += q[t];
+      }
+    }
     for (let t = 0; t < n; t++) {
       qual[t] += q[t];
+      if (trackScen) {
+        let mask = allMask;
+        for (let i = 0; i < F; i++) if (free[i].a === t || free[i].b === t) mask &= ~(1 << i);
+        const si = myWins[t] * NM + mask;
+        sCnt[t][si]++; sQ[t][si] += q[t];
+      }
       const k = myWins[t];
       bCnt[t][k]++; bQ[t][k] += q[t];
       const base = k * F * 2;
@@ -188,8 +244,9 @@ function simulate(input, onProgress) {
     for (let k = myGames[t]; k >= 0; k--) {
       if (!bCnt[t][k]) continue;
       const p = bQ[t][k] / bCnt[t][k];
-      // Best single outside result, if it changes things
-      let help = null;
+      // Outside results that move this bucket's odds: the ones that help most, and any that on
+      // their own put the team out. help is the single best, kept for older callers.
+      const helps = [], outIf = [];
       if (p > 1e-9 && p < 1 - 1e-9) {
         for (let i = 0; i < F; i++) {
           const m = free[i];
@@ -198,13 +255,38 @@ function simulate(input, onProgress) {
             const c = k * F * 2 + i * 2 + s;
             if (!cCnt[t][c]) continue;
             const pc = cQ[t][c] / cCnt[t][c];
-            if (pc > p + 0.005 && (!help || pc > help.p)) {
-              help = { matchId: m.id, winner: teams[s ? m.b : m.a], loser: teams[s ? m.a : m.b], p: pc };
-            }
+            const r = { matchId: m.id, winner: teams[s ? m.b : m.a], loser: teams[s ? m.a : m.b], p: pc };
+            if (pc > p + 0.005) helps.push(r);
+            else if (pc <= 1e-9) outIf.push(r);
           }
         }
+        helps.sort((x, y) => y.p - x.p);
       }
-      buckets.push({ wins: k, games: myGames[t], p, help });
+      const help = helps[0] || null;
+      // Every combination of outside winners that leaves the team a chance, best first.
+      let scenarios = null;
+      if (trackScen && p > 1e-9 && p < 1 - 1e-9) {
+        scenarios = [];
+        let total = 0;
+        for (let mask = 0; mask < NM; mask++) {
+          const c = sCnt[t][k * NM + mask];
+          if (!c) continue;
+          total++;
+          const pm = sQ[t][k * NM + mask] / c;
+          if (pm <= 1e-9) continue;
+          const picks = [];
+          for (let i = 0; i < F; i++) {
+            const m = free[i];
+            if (m.a === t || m.b === t) continue;
+            const bWon = (mask >> i) & 1;
+            picks.push({ matchId: m.id, winner: teams[bWon ? m.b : m.a], loser: teams[bWon ? m.a : m.b] });
+          }
+          scenarios.push({ picks, p: pm });
+        }
+        scenarios.sort((x, y) => y.p - x.p);
+        scenarios = { total, alive: scenarios.length, list: scenarios.slice(0, 16) };
+      }
+      buckets.push({ wins: k, games: myGames[t], p, share: bCnt[t][k] / runs, help, helps: helps.slice(0, 3), outIf: outIf.slice(0, 2), scenarios });
     }
     return {
       team,
@@ -214,7 +296,27 @@ function simulate(input, onProgress) {
       buckets,
     };
   });
-  return { exact, runs, total: exact ? total : null, freeMatches: F, seed: exact ? null : seedFrom(input), results };
+  const tree = trackTree ? {
+    teams, matches: focusIdx.map((i) => ({ id: free[i].id, a: teams[free[i].a], b: teams[free[i].b], ft: free[i].f })),
+    leaves: Array.from({ length: NF }, (_, mask) => gCnt[mask] ? {
+      share: gCnt[mask] / runs,
+      q: Array.from({ length: n }, (_, t) => gQ[mask * n + t] / gCnt[mask]),
+      place: Array.from({ length: n }, (_, t) => gP[mask * n + t] / gCnt[mask] + 1),
+      // by[t][j][lm]: odds for team t when focus match j ended with the loser on lm maps (null if never)
+      pairs: trackPair ? {
+        list: pairList, mf: MF,
+        by: Array.from({ length: n }, (_, t) => pairList.map((_, p) => Array.from({ length: MM }, (_, c) => {
+          const k = pCnt[(mask * PK + p) * MM + c];
+          return k ? pQ[((mask * n + t) * PK + p) * MM + c] / k : null;
+        }))),
+      } : null,
+      by: trackMar ? Array.from({ length: n }, (_, t) => Array.from({ length: KF }, (_, j) => Array.from({ length: MF }, (_, lm) => {
+        const c = mCnt[(mask * KF + j) * MF + lm];
+        return c ? mQ[((mask * n + t) * KF + j) * MF + lm] / c : null;
+      }))) : null,
+    } : null),
+  } : null;
+  return { tree, exact, runs, total: exact ? total : null, freeMatches: F, seed: exact ? null : seedFrom(input), results };
 }
 
 if (typeof self !== "undefined" && typeof self.postMessage === "function" && typeof window === "undefined") {
